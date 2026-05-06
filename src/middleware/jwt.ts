@@ -1,9 +1,9 @@
 import { FastifyRequest, FastifyReply } from 'fastify'
 import { jwtVerify, importSPKI, type KeyLike } from 'jose'
 
+// All routes that DON'T require a JWT — auth endpoints and public search
 const PUBLIC_ROUTES = [
-  '/v1/auth/otp/',
-  '/v1/auth/token/refresh',
+  '/v1/auth/',       // all auth routes: otp/send, otp/verify, token/refresh, logout
   '/v1/search/rides',
   '/v1/search/places/',
   '/health',
@@ -11,9 +11,11 @@ const PUBLIC_ROUTES = [
 
 let publicKey: KeyLike | null = null
 
-// Fix PEM keys from environment variables (Railway stores literal \n)
+// Fix PEM keys from Railway env vars: literal backslash-n → real newline
+// Using String.fromCharCode to avoid any escape interpretation issues
+const BACKSLASH_N = String.fromCharCode(92, 110) // literally: \n (two chars)
 function fixPemNewlines(raw: string): string {
-  return raw.replace(/\\n/g, '\n')
+  return raw.split(BACKSLASH_N).join('\n')
 }
 
 export async function jwtMiddleware(request: FastifyRequest, reply: FastifyReply) {
@@ -28,10 +30,8 @@ export async function jwtMiddleware(request: FastifyRequest, reply: FastifyReply
   const token = authHeader.slice(7)
 
   try {
-    // For local dev: if JWT_PUBLIC_KEY is not set, use a simple decode (dev mode only)
+    // For dev/testing: if JWT_PUBLIC_KEY is not set, do a simple base64 decode (no verification)
     if (!process.env.JWT_PUBLIC_KEY) {
-      // In dev mode without JWT keys, we'll just trust the token and decode it
-      // This is ONLY for local development convenience
       const parts = token.split('.')
       if (parts.length === 3) {
         const payload = JSON.parse(Buffer.from(parts[1], 'base64url').toString())
