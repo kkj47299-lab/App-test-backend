@@ -1,0 +1,8 @@
+node_modules/
+dist/
+.env
+private.pem
+public.pem
+private_oneline.txt
+public_oneline.txt
+*.pem
