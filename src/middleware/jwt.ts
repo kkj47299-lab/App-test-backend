@@ -1,5 +1,5 @@
 import { FastifyRequest, FastifyReply } from 'fastify'
-import { jwtVerify, importSPKI } from 'jose'
+import { jwtVerify, importSPKI, type KeyLike } from 'jose'
 
 const PUBLIC_ROUTES = [
   '/v1/auth/otp/',
@@ -9,7 +9,7 @@ const PUBLIC_ROUTES = [
   '/health',
 ]
 
-let publicKey: CryptoKey | null = null
+let publicKey: KeyLike | null = null
 
 export async function jwtMiddleware(request: FastifyRequest, reply: FastifyReply) {
   // Skip public routes
@@ -41,7 +41,7 @@ export async function jwtMiddleware(request: FastifyRequest, reply: FastifyReply
       publicKey = await importSPKI(process.env.JWT_PUBLIC_KEY, 'RS256')
     }
 
-    const { payload } = await jwtVerify(token, publicKey)
+    const { payload } = await jwtVerify(token, publicKey!)
     request.headers['x-user-id'] = payload.sub as string
     request.headers['x-user-role'] = payload.role as string
   } catch (err) {
