@@ -3,17 +3,22 @@ import { sql } from '../db.js'
 import { SignJWT, importPKCS8 } from 'jose'
 import admin from 'firebase-admin'
 
+// Fix PEM keys from environment variables
+// Railway/Heroku store env vars as plain strings, so "\n" becomes the
+// literal 2-char sequence backslash + n. We need real newlines for PEM parsing.
+function fixPemNewlines(raw: string): string {
+  // Handle both escaped \\n and literal \n
+  return raw.replace(/\\n/g, '\n')
+}
+
 // Initialize Firebase Admin (lazy, once)
 if (!admin.apps.length) {
-  const rawKey = process.env.FIREBASE_PRIVATE_KEY || ''
-  // Railway/Heroku store literal \n in env vars — convert to real newlines
-  const privateKey = rawKey.replace(/\\n/g, '\n')
-
   try {
+    const rawKey = process.env.FIREBASE_PRIVATE_KEY || ''
     admin.initializeApp({
       credential: admin.credential.cert({
         projectId: process.env.FIREBASE_PROJECT_ID,
-        privateKey,
+        privateKey: fixPemNewlines(rawKey),
         clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
       })
     })
@@ -93,8 +98,7 @@ async function generateAccessToken(userId: string, role: string): Promise<string
     return `eyJ0eXAiOiJKV1QiLCJhbGciOiJub25lIn0.${payload}.dev`
   }
 
-  const rawJwtKey = process.env.JWT_PRIVATE_KEY.replace(/\\n/g, '\n')
-  const privateKey = await importPKCS8(rawJwtKey, 'RS256')
+  const privateKey = await importPKCS8(fixPemNewlines(process.env.JWT_PRIVATE_KEY), 'RS256')
   return new SignJWT({ role })
     .setSubject(userId)
     .setIssuedAt()
@@ -110,8 +114,7 @@ async function generateRefreshToken(userId: string): Promise<string> {
     return `eyJ0eXAiOiJKV1QiLCJhbGciOiJub25lIn0.${payload}.dev`
   }
 
-  const rawJwtKey = process.env.JWT_PRIVATE_KEY.replace(/\\n/g, '\n')
-  const privateKey = await importPKCS8(rawJwtKey, 'RS256')
+  const privateKey = await importPKCS8(fixPemNewlines(process.env.JWT_PRIVATE_KEY), 'RS256')
   return new SignJWT({ type: 'refresh' })
     .setSubject(userId)
     .setIssuedAt()

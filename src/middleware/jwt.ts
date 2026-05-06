@@ -11,6 +11,11 @@ const PUBLIC_ROUTES = [
 
 let publicKey: KeyLike | null = null
 
+// Fix PEM keys from environment variables (Railway stores literal \n)
+function fixPemNewlines(raw: string): string {
+  return raw.replace(/\\n/g, '\n')
+}
+
 export async function jwtMiddleware(request: FastifyRequest, reply: FastifyReply) {
   // Skip public routes
   if (PUBLIC_ROUTES.some(r => request.url.startsWith(r))) return
@@ -38,9 +43,7 @@ export async function jwtMiddleware(request: FastifyRequest, reply: FastifyReply
     }
 
     if (!publicKey) {
-      // Railway stores literal \n in env vars — convert to real newlines
-      const rawKey = process.env.JWT_PUBLIC_KEY.replace(/\\n/g, '\n')
-      publicKey = await importSPKI(rawKey, 'RS256')
+      publicKey = await importSPKI(fixPemNewlines(process.env.JWT_PUBLIC_KEY), 'RS256')
     }
 
     const { payload } = await jwtVerify(token, publicKey!)
