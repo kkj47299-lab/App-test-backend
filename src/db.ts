@@ -18,11 +18,18 @@ function fixDbUrl(raw: string): string {
 
 const DATABASE_URL = fixDbUrl(rawUrl)
 
+// Detect if we're using Supabase's transaction-mode pooler (port 6543)
+// Transaction-mode poolers don't support prepared statements
+const isPooler = DATABASE_URL.includes('pooler.supabase.com') || DATABASE_URL.includes(':6543/')
+
 export const sql = postgres(DATABASE_URL, {
   max: 10,
   idle_timeout: 20,
   connect_timeout: 10,
-  ssl: { rejectUnauthorized: false }
+  ssl: { rejectUnauthorized: false },
+  // Transaction-mode poolers (port 6543) don't support prepared statements
+  // Session-mode poolers and direct connections do support them
+  prepare: !isPooler,
 })
 
 // Quick test
