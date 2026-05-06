@@ -5,13 +5,22 @@ import admin from 'firebase-admin'
 
 // Initialize Firebase Admin (lazy, once)
 if (!admin.apps.length) {
-  admin.initializeApp({
-    credential: admin.credential.cert({
-      projectId: process.env.FIREBASE_PROJECT_ID,
-      privateKey: process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, '\n'),
-      clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
+  const rawKey = process.env.FIREBASE_PRIVATE_KEY || ''
+  // Railway/Heroku store literal \n in env vars — convert to real newlines
+  const privateKey = rawKey.replace(/\\n/g, '\n')
+
+  try {
+    admin.initializeApp({
+      credential: admin.credential.cert({
+        projectId: process.env.FIREBASE_PROJECT_ID,
+        privateKey,
+        clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
+      })
     })
-  })
+    console.log('✅ Firebase Admin initialized')
+  } catch (err) {
+    console.error('⚠️ Firebase Admin init failed (auth routes will not work):', err)
+  }
 }
 
 export async function authRoutes(app: FastifyInstance) {
@@ -84,7 +93,8 @@ async function generateAccessToken(userId: string, role: string): Promise<string
     return `eyJ0eXAiOiJKV1QiLCJhbGciOiJub25lIn0.${payload}.dev`
   }
 
-  const privateKey = await importPKCS8(process.env.JWT_PRIVATE_KEY, 'RS256')
+  const rawJwtKey = process.env.JWT_PRIVATE_KEY.replace(/\\n/g, '\n')
+  const privateKey = await importPKCS8(rawJwtKey, 'RS256')
   return new SignJWT({ role })
     .setSubject(userId)
     .setIssuedAt()
@@ -100,7 +110,8 @@ async function generateRefreshToken(userId: string): Promise<string> {
     return `eyJ0eXAiOiJKV1QiLCJhbGciOiJub25lIn0.${payload}.dev`
   }
 
-  const privateKey = await importPKCS8(process.env.JWT_PRIVATE_KEY, 'RS256')
+  const rawJwtKey = process.env.JWT_PRIVATE_KEY.replace(/\\n/g, '\n')
+  const privateKey = await importPKCS8(rawJwtKey, 'RS256')
   return new SignJWT({ type: 'refresh' })
     .setSubject(userId)
     .setIssuedAt()

@@ -38,7 +38,9 @@ export async function jwtMiddleware(request: FastifyRequest, reply: FastifyReply
     }
 
     if (!publicKey) {
-      publicKey = await importSPKI(process.env.JWT_PUBLIC_KEY, 'RS256')
+      // Railway stores literal \n in env vars — convert to real newlines
+      const rawKey = process.env.JWT_PUBLIC_KEY.replace(/\\n/g, '\n')
+      publicKey = await importSPKI(rawKey, 'RS256')
     }
 
     const { payload } = await jwtVerify(token, publicKey!)
