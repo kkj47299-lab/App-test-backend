@@ -1,6 +1,6 @@
 import { FastifyInstance } from 'fastify'
 import { sql } from '../db.js'
-import { SignJWT, importPKCS8 } from 'jose'
+import { SignJWT, jwtVerify } from 'jose'
 import admin from 'firebase-admin'
 
 // Fix PEM keys from Railway env vars: literal backslash-n → real newline
@@ -9,7 +9,16 @@ function fixPemNewlines(raw: string): string {
   return raw.split(BACKSLASH_N).join('\n')
 }
 
-// Initialize Firebase Admin (lazy, once)
+// ── JWT Secret ──────────────────────────────────────────────────
+// We use HS256 (symmetric) instead of RS256 (asymmetric PEM keys)
+// because Railway env vars corrupt PEM newlines. HS256 just needs
+// a simple string — no PEM, no ASN1, no newline issues.
+function getJwtSecret(): Uint8Array {
+  const secret = process.env.JWT_SECRET || 'dev-secret-change-in-production'
+  return new TextEncoder().encode(secret)
+}
+
+// ── Firebase Admin ──────────────────────────────────────────────
 if (!admin.apps.length) {
   try {
     const rawKey = process.env.FIREBASE_PRIVATE_KEY || ''
@@ -30,18 +39,12 @@ if (!admin.apps.length) {
 export async function authRoutes(app: FastifyInstance) {
 
   // POST /v1/auth/otp/send
-  // This is a lightweight acknowledgement endpoint. Firebase handles the actual
-  // OTP delivery client-side via PhoneAuthProvider.verifyPhoneNumber().
   app.post('/otp/send', async (request, reply) => {
     const { phone, role } = request.body as { phone: string; role: string }
     return { message: `OTP flow initiated for ${phone} as ${role}` }
   })
 
   // POST /v1/auth/otp/verify
-  // The actual authentication endpoint:
-  //   1. Verify the Firebase ID token (proves the user owns the phone number)
-  //   2. Find or create the user in our database
-  //   3. Issue our own JWT access + refresh tokens
   app.post('/otp/verify', async (request, reply) => {
     const { phone, role, firebaseIdToken } = request.body as {
       phone: string; role: string; firebaseIdToken: string
@@ -56,7 +59,6 @@ export async function authRoutes(app: FastifyInstance) {
       return reply.code(401).send({
         error: 'INVALID_FIREBASE_TOKEN',
         message: 'The Firebase ID token is invalid or expired.',
-        details: err.message
       })
     }
 
@@ -79,7 +81,6 @@ export async function authRoutes(app: FastifyInstance) {
         isNewUser = true
       } else {
         userId = existing[0].id
-        // Update last login and firebase_uid (in case it changed)
         await sql`
           UPDATE app_auth.users
           SET last_login_at = NOW(), firebase_uid = ${decoded.uid}
@@ -91,20 +92,35 @@ export async function authRoutes(app: FastifyInstance) {
       return reply.code(500).send({
         error: 'DATABASE_ERROR',
         message: 'Could not reach the database. Please try again later.',
-        details: process.env.NODE_ENV === 'production' ? undefined : err.message
       })
     }
 
-    // Step 3: Generate our own JWT tokens
+    // Step 3: Generate JWT tokens (HS256 — no PEM keys needed)
     try {
-      const accessToken = await generateAccessToken(userId, role || 'customer')
-      const refreshToken = await generateRefreshToken(userId)
+      const secret = getJwtSecret()
+
+      const accessToken = await new SignJWT({ role: role || 'customer' })
+        .setSubject(userId)
+        .setIssuedAt()
+        .setExpirationTime('1h')
+        .setIssuer(process.env.JWT_ISSUER || 'rideshare')
+        .setProtectedHeader({ alg: 'HS256' })
+        .sign(secret)
+
+      const refreshToken = await new SignJWT({ type: 'refresh' })
+        .setSubject(userId)
+        .setIssuedAt()
+        .setExpirationTime('30d')
+        .setIssuer(process.env.JWT_ISSUER || 'rideshare')
+        .setProtectedHeader({ alg: 'HS256' })
+        .sign(secret)
+
       return { accessToken, refreshToken, userId, isNewUser }
     } catch (err: any) {
       console.error('JWT generation error:', err.message)
       return reply.code(500).send({
         error: 'TOKEN_GENERATION_ERROR',
-        message: 'Could not generate authentication tokens.'
+        message: 'Could not generate authentication tokens.',
       })
     }
   })
@@ -112,51 +128,25 @@ export async function authRoutes(app: FastifyInstance) {
   // POST /v1/auth/token/refresh
   app.post('/token/refresh', async (request, reply) => {
     const { refreshToken } = request.body as { refreshToken: string }
-    // TODO: In production, verify the refresh token signature and check revocation
-    // For now, just echo back — acceptable for MVP/testing
-    return { accessToken: refreshToken }
+    try {
+      const secret = getJwtSecret()
+      const { payload } = await jwtVerify(refreshToken, secret)
+      // Issue a fresh access token
+      const accessToken = await new SignJWT({ role: payload.role as string || 'customer' })
+        .setSubject(payload.sub as string)
+        .setIssuedAt()
+        .setExpirationTime('1h')
+        .setIssuer(process.env.JWT_ISSUER || 'rideshare')
+        .setProtectedHeader({ alg: 'HS256' })
+        .sign(secret)
+      return { accessToken }
+    } catch (err: any) {
+      return reply.code(401).send({ error: 'Invalid refresh token' })
+    }
   })
 
   // POST /v1/auth/logout
-  app.post('/logout', async (request) => {
-    // TODO: In production, revoke the refresh token in DB
+  app.post('/logout', async () => {
     return { message: 'Logged out' }
   })
-}
-
-// ── Token generators ──────────────────────────────────────────────
-
-async function generateAccessToken(userId: string, role: string): Promise<string> {
-  if (!process.env.JWT_PRIVATE_KEY) {
-    // Dev mode: generate a simple unsigned token for testing
-    const payload = Buffer.from(JSON.stringify({
-      sub: userId, role, iat: Math.floor(Date.now() / 1000)
-    })).toString('base64url')
-    return `eyJ0eXAiOiJKV1QiLCJhbGciOiJub25lIn0.${payload}.dev`
-  }
-  const privateKey = await importPKCS8(fixPemNewlines(process.env.JWT_PRIVATE_KEY), 'RS256')
-  return new SignJWT({ role })
-    .setSubject(userId)
-    .setIssuedAt()
-    .setExpirationTime('1h')
-    .setIssuer(process.env.JWT_ISSUER || 'rideshare')
-    .setProtectedHeader({ alg: 'RS256' })
-    .sign(privateKey)
-}
-
-async function generateRefreshToken(userId: string): Promise<string> {
-  if (!process.env.JWT_PRIVATE_KEY) {
-    const payload = Buffer.from(JSON.stringify({
-      sub: userId, type: 'refresh', iat: Math.floor(Date.now() / 1000)
-    })).toString('base64url')
-    return `eyJ0eXAiOiJKV1QiLCJhbGciOiJub25lIn0.${payload}.dev`
-  }
-  const privateKey = await importPKCS8(fixPemNewlines(process.env.JWT_PRIVATE_KEY), 'RS256')
-  return new SignJWT({ type: 'refresh' })
-    .setSubject(userId)
-    .setIssuedAt()
-    .setExpirationTime('30d')
-    .setIssuer(process.env.JWT_ISSUER || 'rideshare')
-    .setProtectedHeader({ alg: 'RS256' })
-    .sign(privateKey)
 }

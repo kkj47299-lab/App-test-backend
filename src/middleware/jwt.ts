@@ -1,7 +1,7 @@
 import { FastifyRequest, FastifyReply } from 'fastify'
-import { jwtVerify, importSPKI, type KeyLike } from 'jose'
+import { jwtVerify } from 'jose'
 
-// All routes that DON'T require a JWT — auth endpoints and public search
+// All routes that DON'T require a JWT
 const PUBLIC_ROUTES = [
   '/v1/auth/',       // all auth routes: otp/send, otp/verify, token/refresh, logout
   '/v1/search/rides',
@@ -9,13 +9,10 @@ const PUBLIC_ROUTES = [
   '/health',
 ]
 
-let publicKey: KeyLike | null = null
-
-// Fix PEM keys from Railway env vars: literal backslash-n → real newline
-// Using String.fromCharCode to avoid any escape interpretation issues
-const BACKSLASH_N = String.fromCharCode(92, 110) // literally: \n (two chars)
-function fixPemNewlines(raw: string): string {
-  return raw.split(BACKSLASH_N).join('\n')
+// HS256 secret — matches what auth.ts uses for signing
+function getJwtSecret(): Uint8Array {
+  const secret = process.env.JWT_SECRET || 'dev-secret-change-in-production'
+  return new TextEncoder().encode(secret)
 }
 
 export async function jwtMiddleware(request: FastifyRequest, reply: FastifyReply) {
@@ -30,23 +27,8 @@ export async function jwtMiddleware(request: FastifyRequest, reply: FastifyReply
   const token = authHeader.slice(7)
 
   try {
-    // For dev/testing: if JWT_PUBLIC_KEY is not set, do a simple base64 decode (no verification)
-    if (!process.env.JWT_PUBLIC_KEY) {
-      const parts = token.split('.')
-      if (parts.length === 3) {
-        const payload = JSON.parse(Buffer.from(parts[1], 'base64url').toString())
-        request.headers['x-user-id'] = payload.sub || payload.userId || 'dev-user'
-        request.headers['x-user-role'] = payload.role || 'customer'
-        return
-      }
-      return reply.code(401).send({ error: 'Invalid token format' })
-    }
-
-    if (!publicKey) {
-      publicKey = await importSPKI(fixPemNewlines(process.env.JWT_PUBLIC_KEY), 'RS256')
-    }
-
-    const { payload } = await jwtVerify(token, publicKey!)
+    const secret = getJwtSecret()
+    const { payload } = await jwtVerify(token, secret)
     request.headers['x-user-id'] = payload.sub as string
     request.headers['x-user-role'] = payload.role as string
   } catch (err) {
